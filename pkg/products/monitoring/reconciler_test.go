@@ -5,7 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/ioutil"
+	"os"
+	"strings"
 	"testing"
+	"text/template"
 
 	l "github.com/integr8ly/integreatly-operator/pkg/resources/logger"
 	configv1 "github.com/openshift/api/config/v1"
@@ -762,7 +766,45 @@ func TestReconciler_reconcileAlertManagerConfigSecret(t *testing.T) {
 		"clusterID":             string(clusterVersion.Spec.ClusterID),
 		"clusterName":           clusterInfra.Status.InfrastructureName,
 		"clusterConsole":        clusterRoute.Spec.Host,
+		"html":                  fmt.Sprintf(`{{ template "email.integreatly.html" . }}`),
 	})
+	testConfigContents, err := ioutil.ReadFile(alertManagerRawConfigTemplatePath)
+	if err != nil {
+		panic(err)
+	}
+	testConfigTmpl, _ := template.New("alertmanagerConfig").Parse(string(testConfigContents))
+	testAlertmanagerConfigFile, _ := os.Create(alertmanagerConfigAndTemplateDir + "/alertmanager-application-monitoring-test.yaml")
+
+	testAlertmanagerConfigData := AlertManagerConfig{
+		"{{ index .Params \"Subject\" }}",
+		"{{ index .Params \"html\" }}",
+		clusterInfra.Status.InfrastructureName,
+		string(clusterVersion.Spec.ClusterID),
+		clusterRoute.Spec.Host,
+		mockAlertingEmailAddress,
+		string(pagerdutySecret.Data["serviceKey"]),
+		string(dmsSecret.Data["url"]),
+		mockBUAlertingEmailAddress,
+		mockCustomerAlertingEmailAddress,
+		mockAlertFromAddress,
+	}
+
+	err = testConfigTmpl.Execute(testAlertmanagerConfigFile, testAlertmanagerConfigData)
+	testAlertmanagerConfigFile.Close()
+
+	// GENERATE ALERTMANAGER CUSTOM EMAIL TEMPLATE
+	testEmailConfigContents, err := ioutil.ReadFile("templates/monitoring/alertmanager/alertmanager-email-config-temp.tmpl")
+
+	testEmailConfigContentsStr := string(testEmailConfigContents)
+	cluster_vars := map[string]string{
+		"${CLUSTER_NAME}":    clusterInfra.Status.InfrastructureName,
+		"${CLUSTER_ID}":      string(clusterVersion.Spec.ClusterID),
+		"${CLUSTER_CONSOLE}": clusterRoute.Spec.Host,
+	}
+
+	for name, val := range cluster_vars {
+		testEmailConfigContentsStr = strings.Replace(testEmailConfigContentsStr, name, val, 1)
+	}
 
 	testSecretData, err := templateUtil.LoadTemplate(alertManagerConfigTemplatePath)
 
@@ -877,6 +919,9 @@ func TestReconciler_reconcileAlertManagerConfigSecret(t *testing.T) {
 				if !bytes.Equal(configSecret.Data[alertManagerConfigSecretFileName], testSecretData) {
 					return fmt.Errorf("secret data is not equal, got = %v,\n want = %v", string(configSecret.Data[alertManagerConfigSecretFileName]), string(testSecretData))
 				}
+				if !bytes.Equal(configSecret.Data[alertManagerEmailTemplateSecretFileName], []byte(testEmailConfigContentsStr)) {
+					return fmt.Errorf("secret data is not equal, got = %v,\n want = %v", string(configSecret.Data[alertManagerEmailTemplateSecretFileName]), testEmailConfigContentsStr)
+				}
 				return nil
 			},
 		},
@@ -898,6 +943,9 @@ func TestReconciler_reconcileAlertManagerConfigSecret(t *testing.T) {
 				}
 				if !bytes.Equal(configSecret.Data[alertManagerConfigSecretFileName], testSecretData) {
 					return fmt.Errorf("secret data is not equal, got = %v,\n want = %v", string(configSecret.Data[alertManagerConfigSecretFileName]), string(testSecretData))
+				}
+				if !bytes.Equal(configSecret.Data[alertManagerEmailTemplateSecretFileName], []byte(testEmailConfigContentsStr)) {
+					return fmt.Errorf("secret data is not equal, got = %v,\n want = %v", string(configSecret.Data[alertManagerEmailTemplateSecretFileName]), testEmailConfigContentsStr)
 				}
 				return nil
 			},
@@ -933,7 +981,42 @@ func TestReconciler_reconcileAlertManagerConfigSecret(t *testing.T) {
 					"clusterID":             string(clusterVersion.Spec.ClusterID),
 					"clusterName":           clusterInfra.Status.InfrastructureName,
 					"clusterConsole":        clusterRoute.Spec.Host,
+					"html":                  fmt.Sprintf(`{{ template "email.integreatly.html" . }}`),
 				})
+				testConfigContents, err := ioutil.ReadFile(alertManagerRawConfigTemplatePath)
+				testConfigTmpl, err := template.New("alertmanagerConfig").Parse(string(testConfigContents))
+				testAlertmanagerConfigFile, err := os.Create(alertmanagerConfigAndTemplateDir + "/alertmanager-application-monitoring-test.yaml")
+
+				testAlertmanagerConfigData := AlertManagerConfig{
+					"{{ index .Params \"Subject\" }}",
+					"{{ index .Params \"html\" }}",
+					clusterInfra.Status.InfrastructureName,
+					string(clusterVersion.Spec.ClusterID),
+					clusterRoute.Spec.Host,
+					mockAlertingEmailAddress,
+					string(pagerdutySecret.Data["serviceKey"]),
+					string(dmsSecret.Data["url"]),
+					mockBUAlertingEmailAddress,
+					mockCustomerAlertingEmailAddress,
+					mockAlertFromAddress,
+				}
+
+				err = testConfigTmpl.Execute(testAlertmanagerConfigFile, testAlertmanagerConfigData)
+				testAlertmanagerConfigFile.Close()
+
+				// GENERATE ALERTMANAGER CUSTOM EMAIL TEMPLATE
+				testEmailConfigContents, err := ioutil.ReadFile("templates/monitoring/alertmanager/alertmanager-email-config-temp.tmpl")
+
+				testEmailConfigContentsStr := string(testEmailConfigContents)
+				cluster_vars := map[string]string{
+					"${CLUSTER_NAME}":    clusterInfra.Status.InfrastructureName,
+					"${CLUSTER_ID}":      string(clusterVersion.Spec.ClusterID),
+					"${CLUSTER_CONSOLE}": clusterRoute.Spec.Host,
+				}
+
+				for name, val := range cluster_vars {
+					testEmailConfigContentsStr = strings.Replace(testEmailConfigContentsStr, name, val, 1)
+				}
 
 				testSecretData, err := templateUtil.LoadTemplate(alertManagerConfigTemplatePath)
 				if err != nil {
@@ -942,6 +1025,10 @@ func TestReconciler_reconcileAlertManagerConfigSecret(t *testing.T) {
 				if !bytes.Equal(configSecret.Data[alertManagerConfigSecretFileName], testSecretData) {
 					return fmt.Errorf("secret data is not equal, got = %v,\n want = %v", string(configSecret.Data[alertManagerConfigSecretFileName]), string(testSecretData))
 				}
+				if !bytes.Equal(configSecret.Data[alertManagerEmailTemplateSecretFileName], []byte(testEmailConfigContentsStr)) {
+					return fmt.Errorf("secret data is not equal, got = %v,\n want = %v", string(configSecret.Data[alertManagerEmailTemplateSecretFileName]), testEmailConfigContentsStr)
+				}
+				os.Remove(alertManagerConfigTemplatePath)
 				return nil
 			},
 		},
@@ -967,6 +1054,8 @@ func TestReconciler_reconcileAlertManagerConfigSecret(t *testing.T) {
 			}
 		})
 	}
+
+	os.Remove(alertmanagerConfigAndTemplateDir + "/alertmanager-application-monitoring.yaml")
 }
 
 func TestReconciler_getPagerDutySecret(t *testing.T) {
