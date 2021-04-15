@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"os"
 	"strings"
 	"testing"
-	"text/template"
 
 	l "github.com/integr8ly/integreatly-operator/pkg/resources/logger"
 	configv1 "github.com/openshift/api/config/v1"
@@ -413,6 +411,16 @@ func TestReconciler_fullReconcile(t *testing.T) {
 		},
 	}
 
+	grafanaRoute := &routev1.Route{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      grafanaRouteName,
+			Namespace: grafanaRouteNamespace,
+		},
+		Spec: routev1.RouteSpec{
+			Host: "example-grafana.com",
+		},
+	}
+
 	cases := []struct {
 		Name           string
 		ExpectError    bool
@@ -430,7 +438,7 @@ func TestReconciler_fullReconcile(t *testing.T) {
 			ExpectedStatus: integreatlyv1alpha1.PhaseCompleted,
 			FakeClient: moqclient.NewSigsClientMoqWithScheme(scheme, ns, operatorNS, federationNs,
 				grafanadatasourcesecret, installation, smtpSecret, pagerdutySecret,
-				dmsSecret, alertmanagerRoute, grafana, clusterInfra, clusterVersion, clusterRoute),
+				dmsSecret, alertmanagerRoute, grafana, clusterInfra, clusterVersion, clusterRoute, grafanaRoute),
 			FakeConfig: &config.ConfigReadWriterMock{
 				ReadMonitoringFunc: func() (ready *config.Monitoring, e error) {
 					return config.NewMonitoring(config.ProductConfig{
@@ -751,6 +759,16 @@ func TestReconciler_reconcileAlertManagerConfigSecret(t *testing.T) {
 		},
 	}
 
+	grafanaRoute := &routev1.Route{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      grafanaRouteName,
+			Namespace: grafanaRouteNamespace,
+		},
+		Spec: routev1.RouteSpec{
+			Host: "example-grafana.com",
+		},
+	}
+
 	templateUtil := NewTemplateHelper(map[string]string{
 		"SMTPHost":              string(smtpSecret.Data["host"]),
 		"SMTPPort":              string(smtpSecret.Data["port"]),
@@ -766,34 +784,12 @@ func TestReconciler_reconcileAlertManagerConfigSecret(t *testing.T) {
 		"clusterID":             string(clusterVersion.Spec.ClusterID),
 		"clusterName":           clusterInfra.Status.InfrastructureName,
 		"clusterConsole":        clusterRoute.Spec.Host,
+		"grafanaRoute":          grafanaRoute.Spec.Host,
 		"html":                  fmt.Sprintf(`{{ template "email.integreatly.html" . }}`),
 	})
-	testConfigContents, err := ioutil.ReadFile(alertManagerRawConfigTemplatePath)
-	if err != nil {
-		panic(err)
-	}
-	testConfigTmpl, _ := template.New("alertmanagerConfig").Parse(string(testConfigContents))
-	testAlertmanagerConfigFile, _ := os.Create(alertmanagerConfigAndTemplateDir + "/alertmanager-application-monitoring-test.yaml")
 
-	testAlertmanagerConfigData := AlertManagerConfig{
-		"{{ index .Params \"Subject\" }}",
-		"{{ index .Params \"html\" }}",
-		clusterInfra.Status.InfrastructureName,
-		string(clusterVersion.Spec.ClusterID),
-		clusterRoute.Spec.Host,
-		mockAlertingEmailAddress,
-		string(pagerdutySecret.Data["serviceKey"]),
-		string(dmsSecret.Data["url"]),
-		mockBUAlertingEmailAddress,
-		mockCustomerAlertingEmailAddress,
-		mockAlertFromAddress,
-	}
-
-	err = testConfigTmpl.Execute(testAlertmanagerConfigFile, testAlertmanagerConfigData)
-	testAlertmanagerConfigFile.Close()
-
-	// GENERATE ALERTMANAGER CUSTOM EMAIL TEMPLATE
-	testEmailConfigContents, err := ioutil.ReadFile("templates/monitoring/alertmanager/alertmanager-email-config-temp.tmpl")
+	// Generate Alertmanager custom email template
+	testEmailConfigContents, err := ioutil.ReadFile(alertManagerCustomTemplatePath)
 
 	testEmailConfigContentsStr := string(testEmailConfigContents)
 	cluster_vars := map[string]string{
@@ -903,7 +899,7 @@ func TestReconciler_reconcileAlertManagerConfigSecret(t *testing.T) {
 		{
 			name: "secret created successfully",
 			serverClient: func() k8sclient.Client {
-				return fakeclient.NewFakeClientWithScheme(basicScheme, smtpSecret, pagerdutySecret, dmsSecret, alertmanagerRoute, clusterInfra, clusterVersion, clusterRoute)
+				return fakeclient.NewFakeClientWithScheme(basicScheme, smtpSecret, pagerdutySecret, dmsSecret, alertmanagerRoute, clusterInfra, clusterVersion, clusterRoute, grafanaRoute)
 			},
 			reconciler: func() *Reconciler {
 				rec := basicReconciler()
@@ -928,7 +924,7 @@ func TestReconciler_reconcileAlertManagerConfigSecret(t *testing.T) {
 		{
 			name: "secret data is overridden if already exists",
 			serverClient: func() k8sclient.Client {
-				return fakeclient.NewFakeClientWithScheme(basicScheme, smtpSecret, pagerdutySecret, dmsSecret, alertmanagerRoute, alertmanagerConfigSecret, clusterInfra, clusterVersion, clusterRoute)
+				return fakeclient.NewFakeClientWithScheme(basicScheme, smtpSecret, pagerdutySecret, dmsSecret, alertmanagerRoute, alertmanagerConfigSecret, clusterInfra, clusterVersion, clusterRoute, grafanaRoute)
 			},
 			reconciler: func() *Reconciler {
 				rec := basicReconciler()
@@ -953,7 +949,7 @@ func TestReconciler_reconcileAlertManagerConfigSecret(t *testing.T) {
 		{
 			name: "alert address env override is successful",
 			serverClient: func() k8sclient.Client {
-				return fakeclient.NewFakeClientWithScheme(basicScheme, smtpSecret, pagerdutySecret, dmsSecret, alertmanagerRoute, clusterInfra, clusterVersion, clusterRoute)
+				return fakeclient.NewFakeClientWithScheme(basicScheme, smtpSecret, pagerdutySecret, dmsSecret, alertmanagerRoute, clusterInfra, clusterVersion, clusterRoute, grafanaRoute)
 			},
 			reconciler: func() *Reconciler {
 				reconciler := basicReconciler()
@@ -981,31 +977,12 @@ func TestReconciler_reconcileAlertManagerConfigSecret(t *testing.T) {
 					"clusterID":             string(clusterVersion.Spec.ClusterID),
 					"clusterName":           clusterInfra.Status.InfrastructureName,
 					"clusterConsole":        clusterRoute.Spec.Host,
+					"grafanaRoute":          grafanaRoute.Spec.Host,
 					"html":                  fmt.Sprintf(`{{ template "email.integreatly.html" . }}`),
 				})
-				testConfigContents, err := ioutil.ReadFile(alertManagerRawConfigTemplatePath)
-				testConfigTmpl, err := template.New("alertmanagerConfig").Parse(string(testConfigContents))
-				testAlertmanagerConfigFile, err := os.Create(alertmanagerConfigAndTemplateDir + "/alertmanager-application-monitoring-test.yaml")
 
-				testAlertmanagerConfigData := AlertManagerConfig{
-					"{{ index .Params \"Subject\" }}",
-					"{{ index .Params \"html\" }}",
-					clusterInfra.Status.InfrastructureName,
-					string(clusterVersion.Spec.ClusterID),
-					clusterRoute.Spec.Host,
-					mockAlertingEmailAddress,
-					string(pagerdutySecret.Data["serviceKey"]),
-					string(dmsSecret.Data["url"]),
-					mockBUAlertingEmailAddress,
-					mockCustomerAlertingEmailAddress,
-					mockAlertFromAddress,
-				}
-
-				err = testConfigTmpl.Execute(testAlertmanagerConfigFile, testAlertmanagerConfigData)
-				testAlertmanagerConfigFile.Close()
-
-				// GENERATE ALERTMANAGER CUSTOM EMAIL TEMPLATE
-				testEmailConfigContents, err := ioutil.ReadFile("templates/monitoring/alertmanager/alertmanager-email-config-temp.tmpl")
+				// Generate Alertmanager custom email template
+				testEmailConfigContents, err := ioutil.ReadFile(alertManagerCustomTemplatePath)
 
 				testEmailConfigContentsStr := string(testEmailConfigContents)
 				cluster_vars := map[string]string{
@@ -1028,7 +1005,7 @@ func TestReconciler_reconcileAlertManagerConfigSecret(t *testing.T) {
 				if !bytes.Equal(configSecret.Data[alertManagerEmailTemplateSecretFileName], []byte(testEmailConfigContentsStr)) {
 					return fmt.Errorf("secret data is not equal, got = %v,\n want = %v", string(configSecret.Data[alertManagerEmailTemplateSecretFileName]), testEmailConfigContentsStr)
 				}
-				os.Remove(alertManagerConfigTemplatePath)
+
 				return nil
 			},
 		},
@@ -1054,8 +1031,6 @@ func TestReconciler_reconcileAlertManagerConfigSecret(t *testing.T) {
 			}
 		})
 	}
-
-	os.Remove(alertmanagerConfigAndTemplateDir + "/alertmanager-application-monitoring.yaml")
 }
 
 func TestReconciler_getPagerDutySecret(t *testing.T) {

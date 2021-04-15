@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"text/template"
 
 	l "github.com/integr8ly/integreatly-operator/pkg/resources/logger"
 	configv1 "github.com/openshift/api/config/v1"
@@ -64,9 +63,7 @@ const (
 	alertManagerConfigSecretFileName        = "alertmanager.yaml"
 	alertManagerEmailTemplateSecretFileName = "alertmanager-email-config.tmpl"
 	alertManagerConfigTemplatePath          = "alertmanager/alertmanager-application-monitoring.yaml"
-	alertManagerRawConfigTemplatePath       = "templates/monitoring/alertmanager/alertmanager-application-monitoring.tmpl"
 	alertManagerCustomTemplatePath          = "templates/monitoring/alertmanager/alertmanager-email-config.tmpl"
-	alertmanagerConfigAndTemplateDir        = "templates/monitoring/alertmanager"
 
 	// cluster monitoring federation
 	federationServiceMonitorName              = "rhmi-alerts-federate"
@@ -83,6 +80,10 @@ const (
 	// For OpenShift console
 	openShiftConsoleRoute     = "console"
 	openShiftConsoleNamespace = "openshift-console"
+
+	// For OpenShift console
+	grafanaRouteName      = "grafana-route"
+	grafanaRouteNamespace = "redhat-rhoam-middleware-monitoring-operator"
 )
 
 type Reconciler struct {
@@ -95,20 +96,6 @@ type Reconciler struct {
 	monitoring    *monitoring.ApplicationMonitoring
 	*resources.Reconciler
 	recorder record.EventRecorder
-}
-
-type AlertManagerConfig struct {
-	EmailSubject          string
-	EmailTemplateFile     string
-	ClusterName           string
-	ClusterID             string
-	ClusterConsole        string
-	SMTPToSREAddress      string
-	PagerDutyServiceKey   string
-	DeadMansSnitchURL     string
-	SMTPToBUAddress       string
-	SMTPToCustomerAddress string
-	SMTPFrom              string
 }
 
 func (r *Reconciler) GetPreflightObject(ns string) runtime.Object {
@@ -727,23 +714,6 @@ func (r *Reconciler) populateParams(ctx context.Context, serverClient k8sclient.
 	return integreatlyv1alpha1.PhaseCompleted, nil
 }
 
-// Read Alert Manager Config go Template from filesystem
-func (r *Reconciler) readAlertManagerConfigTemplate(templatePath string) (fp *os.File, tmp *template.Template, err error) {
-	configContents, err := ioutil.ReadFile(templatePath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("could not read alertmanager config template file: %w", err)
-	}
-	configTmpl, err := template.New("alertmanagerConfig").Parse(string(configContents))
-	if err != nil {
-		return nil, nil, fmt.Errorf("could not parse alertmanager config template: %w", err)
-	}
-	alertmanagerConfigFile, err := os.Create(alertmanagerConfigAndTemplateDir + "/alertmanager-application-monitoring.yaml")
-	if err != nil {
-		return nil, nil, fmt.Errorf("could not create alertmanager config file: %w", err)
-	}
-	return alertmanagerConfigFile, configTmpl, nil
-}
-
 // Read Alert Manager Config Template from filesystem
 func (r *Reconciler) readAlertManagerCustomTemplate(templatePath string) (content string, err error) {
 	customTemplateContents, err := ioutil.ReadFile(templatePath)
@@ -840,6 +810,11 @@ func (r *Reconciler) reconcileAlertManagerConfigSecret(ctx context.Context, serv
 		return integreatlyv1alpha1.PhaseFailed, fmt.Errorf("failed to fetch OpenShift console URL details for alertmanager config: %w", err)
 	}
 
+	grafanaRoute := &routev1.Route{}
+	if err := serverClient.Get(context.TODO(), types.NamespacedName{Name: grafanaRouteName, Namespace: grafanaRouteNamespace}, grafanaRoute); err != nil {
+		return integreatlyv1alpha1.PhaseFailed, fmt.Errorf("failed to fetch OpenShift console URL details for alertmanager config: %w", err)
+	}
+
 	// parse the config template into a secret object
 	templateUtil := NewTemplateHelper(map[string]string{
 		"SMTPHost":              string(smtpSecret.Data["host"]),
@@ -856,34 +831,13 @@ func (r *Reconciler) reconcileAlertManagerConfigSecret(ctx context.Context, serv
 		"clusterID":             string(clusterVersion.Spec.ClusterID),
 		"clusterName":           clusterInfra.Status.InfrastructureName,
 		"clusterConsole":        clusterRoute.Spec.Host,
+		"grafanaRoute":          grafanaRoute.Spec.Host,
 		"html":                  fmt.Sprintf(`{{ template "email.integreatly.html" . }}`),
 	})
 
-	// GENERATE ALERTMANAGER CONFIG FILE
-	alertmanagerConfigFile, configTmpl, err := r.readAlertManagerConfigTemplate(alertManagerRawConfigTemplatePath)
-	if err != nil {
-		return integreatlyv1alpha1.PhaseFailed, fmt.Errorf(err.Error())
-	}
+	// templatePath := "templates/monitoring"
 
-	alertmanagerConfigData := AlertManagerConfig{
-		"{{ index .Params \"Subject\" }}",
-		"{{ index .Params \"html\" }}",
-		clusterInfra.Status.InfrastructureName,
-		string(clusterVersion.Spec.ClusterID),
-		clusterRoute.Spec.Host,
-		smtpToSREAddress,
-		pagerDutySecret,
-		dmsSecret,
-		smtpToBUAddress,
-		smtpToCustomerAddress,
-		smtpAlertFromAddress,
-	}
-
-	err = configTmpl.Execute(alertmanagerConfigFile, alertmanagerConfigData)
-	if err != nil {
-		return integreatlyv1alpha1.PhaseFailed, fmt.Errorf("Error executing alertmanager config template: %w", err)
-	}
-	alertmanagerConfigFile.Close()
+	// path := fmt.Sprintf("%s/%s", templatePath, alertManagerCustomTemplatePath)
 
 	// GENERATE ALERTMANAGER CUSTOM EMAIL TEMPLATE
 	emailConfigContents, err := r.readAlertManagerCustomTemplate(alertManagerCustomTemplatePath)
@@ -895,6 +849,7 @@ func (r *Reconciler) reconcileAlertManagerConfigSecret(ctx context.Context, serv
 	cluster_vars := map[string]string{
 		"${CLUSTER_NAME}":    clusterInfra.Status.InfrastructureName,
 		"${CLUSTER_ID}":      string(clusterVersion.Spec.ClusterID),
+		"${GRAFANA_URL}":     grafanaRoute.Spec.Host,
 		"${CLUSTER_CONSOLE}": clusterRoute.Spec.Host,
 	}
 
@@ -927,7 +882,6 @@ func (r *Reconciler) reconcileAlertManagerConfigSecret(ctx context.Context, serv
 		return integreatlyv1alpha1.PhaseFailed, fmt.Errorf("could not create or update alert manager secret: %w", err)
 	}
 
-	err = os.Remove(alertmanagerConfigAndTemplateDir + "/alertmanager-application-monitoring.yaml")
 	if err != nil {
 		return integreatlyv1alpha1.PhaseFailed, fmt.Errorf("could not clean runtime generated file: %w", err)
 	}
