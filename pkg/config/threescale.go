@@ -106,15 +106,15 @@ func (t *ThreeScale) Validate() error {
 
 func (t *ThreeScale) GetReplicasConfig(inst *integreatlyv1alpha1.RHMI) map[string]int64 {
 	threeScaleComponents := map[string]int64{
-		"systemApp":       1,
-		"systemSidekiq":   1,
-		"apicastProd":     1,
-		"apicastStage":    1,
-		"backendListener": 1,
-		"backendWorker":   1,
+		"systemApp":       3,
+		"systemSidekiq":   3,
+		"apicastProd":     3,
+		"apicastStage":    3,
+		"backendListener": 3,
+		"backendWorker":   3,
 		"backendCron":     1,
-		"zyncApp":         1,
-		"zyncQue":         1,
+		"zyncApp":         3,
+		"zyncQue":         3,
 	}
 
 	if resources.RunningInProw(inst) {
