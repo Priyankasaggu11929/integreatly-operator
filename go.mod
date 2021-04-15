@@ -101,4 +101,3 @@ replace (
 
 replace github.com/Microsoft/hcsshim => github.com/Microsoft/hcsshim v0.8.14
 
-replace github.com/docker/docker => github.com/docker/docker v1.4.2-0.20200203170920-46ec8731fbce
